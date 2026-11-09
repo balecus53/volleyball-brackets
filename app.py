@@ -1,51 +1,65 @@
 import random
 import streamlit as st
 
-st.set_page_config(page_title="B/C Division 3-Game Guarantee Tournament", layout="wide")
+st.set_page_config(page_title="B/C Division Tournament Schedule", layout="wide")
 
 st.title("🏆 B/C Division Tournament Schedule")
-st.caption("2 Courts | 13 Teams | 3 Games Guaranteed | No Intra-School Matches | No Back-to-Back Games")
+st.caption("2 Courts | 13 Teams | 3 Games Guaranteed | Mixed B vs C Matchups | No Intra-School Matches | No Back-to-Back Games")
 
-# Participating B/C Teams (13 Total)
-TEAMS = [
-    "SB B",
-    "USC B", "USC C",
-    "Biola B",
-    "UCLA B", "UCLA C",
-    "UCI B", "UCI C",
-    "Pepp B",
-    "SD B", "SD C",
-    "Riverside B", "Riverside C"
-]
+# Define B and C teams explicitly separated for partitioning
+B_TEAMS = ["SB B", "USC B", "Biola B", "UCLA B", "UCI B", "Pepp B", "SD B", "Riverside B"]
+C_TEAMS = ["USC C", "UCLA C", "UCI C", "SD C", "Riverside C"]
+ALL_TEAMS = B_TEAMS + C_TEAMS
 
 def get_school(team_name):
     return team_name.split()[0]
 
+def is_c_team(team_name):
+    return team_name.endswith(" C")
+
 def generate_valid_schedule():
-    """Generates a standard 3-round tournament schedule where every team plays 3 games total,
-    never plays their own school, and avoids duplicate matchups."""
-    for attempt in range(1000):
+    """Generates a 3-round tournament schedule enforcing:
+       - Every team plays 3 games.
+       - No same-school matchups.
+       - C teams NEVER play C teams (C teams must play B teams).
+       - B teams can play B or C teams.
+    """
+    for attempt in range(2000):
         rounds = []
         played_pairs = set()
-
         success = True
+
         for r in range(3):
-            available = TEAMS[:]
-            random.shuffle(available)
             round_matches = []
+            available = ALL_TEAMS[:]
+            random.shuffle(available)
+            
+            # Sort so C teams are handled or matched efficiently
+            available.sort(key=lambda t: 0 if is_c_team(t) else 1)
             
             while len(available) >= 2:
                 t1 = available.pop(0)
                 partner = None
-                for candidate in available:
-                    # Enforce different schools & prevent repeat matchups
-                    if get_school(t1) != get_school(candidate):
-                        pair = tuple(sorted([t1, candidate]))
-                        if pair not in played_pairs:
-                            partner = candidate
-                            break
                 
-                if partner:
+                # Filter valid candidates for t1
+                candidates = []
+                for candidate in available:
+                    # 1. No same school
+                    if get_school(t1) == get_school(candidate):
+                        continue
+                    # 2. C vs C restriction (If both are C teams, skip)
+                    if is_c_team(t1) and is_c_team(candidate):
+                        continue
+                    # 3. No duplicate matchups across rounds
+                    pair = tuple(sorted([t1, candidate]))
+                    if pair in played_pairs:
+                        continue
+                    
+                    candidates.append(candidate)
+                
+                if candidates:
+                    # Pick a random valid candidate
+                    partner = random.choice(candidates)
                     available.remove(partner)
                     round_matches.append((t1, partner))
                     played_pairs.add(tuple(sorted([t1, partner])))
@@ -122,7 +136,7 @@ if all_rounds:
     
     with tab1:
         st.subheader("2-Court Timetable (No Back-to-Back Games)")
-        st.caption("Matches ordered across slots so teams get breaks between games.")
+        st.caption("Matches ordered across slots so teams get mandatory rest breaks between games.")
         
         for slot_num, (c1, c2) in enumerate(court_schedule, start=1):
             st.markdown(f"### ⏱️ Time Slot {slot_num}")
@@ -145,9 +159,9 @@ if all_rounds:
 
     with tab3:
         st.subheader("Team Matchup Summary")
-        st.write("Verifies that every team plays exactly 3 games against non-school opponents.")
+        st.write("Verifies that every team plays exactly 3 games, C teams never play C teams, and no intra-school matchups occur.")
         
-        team_summary = {t: [] for t in TEAMS}
+        team_summary = {t: [] for t in ALL_TEAMS}
         for r_idx, r_matches in enumerate(all_rounds, start=1):
             for t1, t2 in r_matches:
                 team_summary[t1].append(f"R{r_idx} vs {t2}")
@@ -156,6 +170,7 @@ if all_rounds:
         t_cols = st.columns(2)
         for idx, (team, games) in enumerate(team_summary.items()):
             with t_cols[idx % 2]:
-                st.write(f"**{team}** ({len(games)} Games): " + " | ".join(games))
+                badge = "🟡 [C Team]" if is_c_team(team) else "🔵 [B Team]"
+                st.write(f"**{team}** {badge} ({len(games)} Games): " + " | ".join(games))
 else:
-    st.error("Could not find a valid schedule matching all constraints. Please hit re-generate!")
+    st.error("Could not find a valid schedule matching all constraints (especially C-vs-C prohibition). Please hit re-generate!")
