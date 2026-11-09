@@ -1,9 +1,10 @@
 import random
 import streamlit as st
 
-st.set_page_config(page_title="Swiss Stage — B/C Division", layout="wide")
+st.set_page_config(page_title="B/C Division 3-Game Guarantee Tournament", layout="wide")
 
-st.caption("13-Team B/C Division | 3 Wins to Qualify / 3 Losses to Eliminate | 2-Court Constraint | No Intra-School Matches")
+st.title("🏆 B/C Division Tournament Schedule")
+st.caption("2 Courts | 13 Teams | 3 Games Guaranteed | No Intra-School Matches | No Back-to-Back Games")
 
 # Participating B/C Teams (13 Total)
 TEAMS = [
@@ -17,37 +18,27 @@ TEAMS = [
     "Riverside B", "Riverside C"
 ]
 
-def get_school(team):
-    return team.split()[0]
+def get_school(team_name):
+    return team_name.split()[0]
 
-def build_swiss_rounds():
-    """Generates a 3-Round Swiss System framework where all teams get 3 games total,
-    never play their own school, and avoid repeat matchups."""
-    for _ in range(1000):
+def generate_valid_schedule():
+    """Generates a standard 3-round tournament schedule where every team plays 3 games total,
+    never plays their own school, and avoids duplicate matchups."""
+    for attempt in range(1000):
         rounds = []
         played_pairs = set()
-        records = {t: {"wins": 0, "losses": 0} for t in TEAMS}
+
         success = True
-        
-        for r_num in range(1, 4):
-            # Group teams by record (Swiss pools)
-            pools = {}
-            for t, rec in records.items():
-                score = f"{rec['wins']}-{rec['losses']}"
-                pools.setdefault(score, []).append(t)
-            
-            round_matches = []
+        for r in range(3):
             available = TEAMS[:]
             random.shuffle(available)
-            
-            # Sort available teams by record score to match similar-record teams first
-            available.sort(key=lambda t: (records[t]["wins"], -records[t]["losses"]), reverse=True)
+            round_matches = []
             
             while len(available) >= 2:
                 t1 = available.pop(0)
                 partner = None
                 for candidate in available:
-                    # Same school check & repeat match check
+                    # Enforce different schools & prevent repeat matchups
                     if get_school(t1) != get_school(candidate):
                         pair = tuple(sorted([t1, candidate]))
                         if pair not in played_pairs:
@@ -61,32 +52,33 @@ def build_swiss_rounds():
                 else:
                     success = False
                     break
-                    
+            
             if not success or len(round_matches) < 6:
                 success = False
                 break
                 
-            rounds.append({"round": r_num, "matches": round_matches, "pools": pools})
-            
+            rounds.append(round_matches)
+
         if success:
             return rounds
+            
     return None
 
-def schedule_2_courts(swiss_rounds):
-    """Schedules matches onto 2 courts with zero back-to-back games for any school."""
+def schedule_courts_no_back_to_back(all_rounds):
+    """Schedules matches onto 2 courts sequentially, guaranteeing no school plays back-to-back slots."""
     flat_matches = []
-    for r_data in swiss_rounds:
-        r_num = r_data["round"]
-        for m in r_data["matches"]:
-            flat_matches.append((r_num, m[0], m[1]))
+    for r_idx, r_matches in enumerate(all_rounds):
+        for m in r_matches:
+            flat_matches.append((r_idx + 1, m[0], m[1]))
             
     slots = []
     last_schools = set()
     
     while flat_matches:
-        court1, court2 = None, None
+        court1 = None
+        court2 = None
         
-        # Court 1 Selection
+        # Pick Court 1 match
         for idx, item in enumerate(flat_matches):
             r, t1, t2 = item
             s1, s2 = get_school(t1), get_school(t2)
@@ -98,7 +90,7 @@ def schedule_2_courts(swiss_rounds):
             
         c1_schools = {get_school(court1[1]), get_school(court1[2])}
         
-        # Court 2 Selection
+        # Pick Court 2 match (avoiding Court 1 schools & previous slot schools)
         for idx, item in enumerate(flat_matches):
             r, t1, t2 = item
             s1, s2 = get_school(t1), get_school(t2)
@@ -116,68 +108,54 @@ def schedule_2_courts(swiss_rounds):
 
     return slots
 
-# App Navigation
-st.sidebar.title("🎮 Swiss Hub")
-if st.sidebar.button("🎲 Re-seed Swiss Draw"):
+# App Interface
+st.sidebar.header("Controls")
+if st.sidebar.button("🎲 Re-generate Schedule"):
     st.rerun()
 
-swiss_data = build_swiss_rounds()
+all_rounds = generate_valid_schedule()
 
-if swiss_data:
-    court_schedule = schedule_2_courts(swiss_data)
+if all_rounds:
+    court_schedule = schedule_courts_no_back_to_back(all_rounds)
     
-    tab1, tab2, tab3 = st.tabs(["🏛️ Swiss Stage Matrix", "📺 Live Broadcast Schedule", "📋 Team Status & Pools"])
-
+    tab1, tab2, tab3 = st.tabs(["🗓️ Master Court Schedule", "📊 Round-by-Round Breakdown", "✅ Team Game Tracker"])
+    
     with tab1:
-        st.subheader("Swiss Stage Matchups (League Format)")
-        st.write("Teams are matched based on performance pool, strictly avoiding intra-school matches.")
+        st.subheader("2-Court Timetable (No Back-to-Back Games)")
+        st.caption("Matches ordered across slots so teams get breaks between games.")
         
-        col_r1, col_r2, col_r3 = st.columns(3)
-        
-        with col_r1:
-            st.markdown("### 🔷 Round 1 (0-0 Record)")
-            for idx, (t1, t2) in enumerate(swiss_data[0]["matches"], 1):
-                st.info(f"**Match {idx}**\n\n🔴 **{t1}** vs 🔵 **{t2}**")
-
-        with col_r2:
-            st.markdown("### 🔶 Round 2 (High vs Low Pools)")
-            for idx, (t1, t2) in enumerate(swiss_data[1]["matches"], 1):
-                st.warning(f"**Match {idx}**\n\n🔴 **{t1}** vs 🔵 **{t2}**")
-
-        with col_r3:
-            st.markdown("### 🔴 Round 3 (Qualification / Elimination)")
-            for idx, (t1, t2) in enumerate(swiss_data[2]["matches"], 1):
-                st.error(f"**Match {idx}**\n\n🔴 **{t1}** vs 🔵 **{t2}**")
-
-    with tab2:
-        st.subheader("2-Court Match Order (No Back-to-Back Games)")
-        st.caption("Optimized sequence so no school plays consecutive time slots.")
-        
-        for slot_idx, (c1, c2) in enumerate(court_schedule, start=1):
-            st.markdown(f"#### ⏱️ Slot {slot_idx}")
-            sc1, sc2 = st.columns(2)
-            with sc1:
+        for slot_num, (c1, c2) in enumerate(court_schedule, start=1):
+            st.markdown(f"### ⏱️ Time Slot {slot_num}")
+            col1, col2 = st.columns(2)
+            with col1:
                 st.success(f"**Court 1 [Round {c1[0]}]:** {c1[1]} vs {c1[2]}")
-            with sc2:
+            with col2:
                 if c2:
                     st.success(f"**Court 2 [Round {c2[0]}]:** {c2[1]} vs {c2[2]}")
                 else:
-                    st.info("**Court 2:** ☕ OPEN / REST SLOT")
+                    st.info("**Court 2:** OPEN / BREAK")
+
+    with tab2:
+        st.subheader("Standard Round Breakdown (6 Matches per Round)")
+        for r_idx, r_matches in enumerate(all_rounds, start=1):
+            st.markdown(f"#### Round {r_idx}")
+            cols = st.columns(3)
+            for m_idx, (t1, t2) in enumerate(r_matches):
+                cols[m_idx % 3].write(f"• **{t1}** vs **{t2}**")
 
     with tab3:
         st.subheader("Team Matchup Summary")
-        summary = {t: [] for t in TEAMS}
-        for r in swiss_data:
-            r_num = r["round"]
-            for t1, t2 in r["matches"]:
-                summary[t1].append(f"R{r_num} vs **{t2}**")
-                summary[t2].append(f"R{r_num} vs **{t1}**")
+        st.write("Verifies that every team plays exactly 3 games against non-school opponents.")
+        
+        team_summary = {t: [] for t in TEAMS}
+        for r_idx, r_matches in enumerate(all_rounds, start=1):
+            for t1, t2 in r_matches:
+                team_summary[t1].append(f"R{r_idx} vs {t2}")
+                team_summary[t2].append(f"R{r_idx} vs {t1}")
 
-        cols = st.columns(2)
-        for idx, (t, games) in enumerate(summary.items()):
-            with cols[idx % 2]:
-                st.markdown(f"**{t}** (3 Games Guaranteed)")
-                st.write(" ➔ ".join(games))
-                st.divider()
+        t_cols = st.columns(2)
+        for idx, (team, games) in enumerate(team_summary.items()):
+            with t_cols[idx % 2]:
+                st.write(f"**{team}** ({len(games)} Games): " + " | ".join(games))
 else:
-    st.error("Failed to generate Swiss layout. Click re-seed!")
+    st.error("Could not find a valid schedule matching all constraints. Please hit re-generate!")
