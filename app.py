@@ -3,7 +3,6 @@ import streamlit as st
 
 st.set_page_config(page_title="Swiss Stage — B/C Division", layout="wide")
 
-st.title("⚔️ League of Legends Style Swiss Stage")
 st.caption("13-Team B/C Division | 3 Wins to Qualify / 3 Losses to Eliminate | 2-Court Constraint | No Intra-School Matches")
 
 # Participating B/C Teams (13 Total)
