@@ -1,12 +1,11 @@
 import random
+from datetime import datetime, timedelta
+
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="B/C Team Playoff Bracket", page_icon="🏆", layout="wide")
-
-# ---------------------------------------------------------------- data
-SCHOOLS = [
-    # name, tiers, approx players
+# ================================================================ DATA
+SCHOOLS = [  # name, teams, approx. players
     ("SB", ["A", "B"], 25),
     ("USC", ["A", "B", "C"], 25),
     ("Biola", ["A", "B"], 16),
@@ -16,21 +15,25 @@ SCHOOLS = [
     ("SD", ["A", "B", "C"], 27),
     ("Riverside", ["A", "B", "C"], 35),
 ]
-BRACKET_TIERS = ["B", "C"]
+BRACKET_TIERS = ["B", "C"]  # A teams are not in this playoff
+COURTS = 2
 
 
 def default_team_table():
     rows = []
-    for tier in BRACKET_TIERS:
-        eligible = [(s, p, len(t)) for s, t, p in SCHOOLS if tier in t]
-        eligible.sort(key=lambda x: -x[1] / x[2])  # biggest avg team first
-        for seed, (school, players, n) in enumerate(eligible, 1):
-            rows.append({"Tier": tier, "Team": f"{school} {tier}", "School": school,
-                         "Est. players": round(players / n), "Seed": seed})
-    return pd.DataFrame(rows)
+    for school, tiers, players in SCHOOLS:
+        for t in tiers:
+            if t in BRACKET_TIERS:
+                rows.append({"Team": f"{school} {t}", "School": school, "Tier": t,
+                             "Est. players": round(players / len(tiers))})
+    df = (pd.DataFrame(rows)
+          .sort_values(["Est. players", "Tier"], ascending=[False, True], kind="stable")
+          .reset_index(drop=True))
+    df["Seed"] = range(1, len(df) + 1)
+    return df
 
 
-# ---------------------------------------------------------------- bracket logic
+# ================================================================ BRACKET LOGIC
 def seed_order(n):
     order = [1]
     while len(order) < n:
@@ -39,134 +42,276 @@ def seed_order(n):
     return order
 
 
-def round_name(r, total):
-    left = total - r
-    return {1: "Final", 2: "Semifinals", 3: "Quarterfinals"}.get(left, f"Round {r + 1}")
-
-
-def build_and_render(tier, teams, key_prefix):
-    """teams: list of team names in seed order. Renders bracket and returns champion."""
+def arrange(teams, school_of, avoid=True):
+    """Place seeded teams in a power-of-2 bracket. Top seeds keep byes. If `avoid`,
+    teams from the same school are moved so they can't meet before the final."""
     n = len(teams)
-    if n < 2:
-        st.info("Need at least 2 teams.")
-        return None
     size = 1
     while size < n:
         size *= 2
-    total_rounds = size.bit_length() - 1
+    total = size.bit_length() - 1
     order = seed_order(size)
-    slots = [teams[s - 1] if s <= n else None for s in order]
+    occupied = [i for i in range(size) if order[i] <= n]
+    init = [order[i] - 1 for i in occupied]
 
-    results = st.session_state.setdefault("results", {})
-    cols = st.columns(total_rounds + 1)
-    current = slots
-    champion = None
+    def cost(perm):
+        dev = sum(abs(perm[k] + 1 - order[occupied[k]]) for k in range(n))
+        coll = 0
+        if avoid:
+            for k in range(n):
+                for l in range(k + 1, n):
+                    if school_of[teams[perm[k]]] == school_of[teams[perm[l]]]:
+                        r = (occupied[k] ^ occupied[l]).bit_length() - 1
+                        coll += 1000 * (total - r)
+        return coll + dev
 
-    for r in range(total_rounds):
-        nxt = []
-        with cols[r]:
-            st.markdown(f"**{round_name(r, total_rounds)}**")
-            for m in range(len(current) // 2):
-                a, b = current[2 * m], current[2 * m + 1]
-                if a is None or b is None:
-                    w = a or b
-                    if r == 0:
-                        with st.container(border=True):
-                            st.caption(f"🛌 {w} — bye")
-                    nxt.append(w)
-                    continue
-                k = f"{key_prefix}_{r}_{m}"
-                options = ["TBD"] + [x for x in (a, b) if x != "TBD"]
-                # drop stale picks when earlier results change
-                if results.get(k, "TBD") not in options:
-                    results[k] = "TBD"
-                if st.session_state.get(k, "TBD") not in options:
-                    st.session_state[k] = "TBD"
-                with st.container(border=True):
-                    st.write(f"{a}  \nvs  \n{b}")
-                    pick = st.selectbox("Winner", options, key=k,
-                                        label_visibility="collapsed")
-                results[k] = pick
-                nxt.append(None if pick == "TBD" else pick)
-                if pick == "TBD":
-                    nxt[-1] = "TBD"
-        current = [None if x is None else x for x in nxt]
-        # TBD teams should not auto-advance as byes
-        current = ["TBD" if x == "TBD" else x for x in current]
-        # a "TBD" slot facing a real team must wait, so treat it as a real (unknown) team
-        if r == total_rounds - 1:
-            champion = current[0]
+    rng = random.Random(1)
+    best, best_c = init[:], cost(init)
+    starts = [init] + [rng.sample(init, n) for _ in range(40 if avoid else 0)]
+    for perm in starts:
+        perm = perm[:]
+        c = cost(perm)
+        improved = True
+        while improved:
+            improved = False
+            for k in range(n):
+                for l in range(k + 1, n):
+                    perm[k], perm[l] = perm[l], perm[k]
+                    c2 = cost(perm)
+                    if c2 < c:
+                        c, improved = c2, True
+                    else:
+                        perm[k], perm[l] = perm[l], perm[k]
+        if c < best_c:
+            best, best_c = perm[:], c
+    slots = [None] * size
+    for k, pos in enumerate(occupied):
+        slots[pos] = teams[best[k]]
+    return slots, total
 
-    with cols[total_rounds]:
-        st.markdown("**Champion**")
-        with st.container(border=True):
-            if champion and champion != "TBD":
-                st.success(f"🏆 {champion}")
+
+def build_matches(slots, total):
+    """Returns matches {(round, idx): {'a': out, 'b': out}} and the final output.
+    An 'out' is ('team', name) or ('match', id). Byes collapse automatically."""
+    outs = [("team", t) if t else None for t in slots]
+    matches = {}
+    for r in range(total):
+        new = []
+        for m in range(len(outs) // 2):
+            a, b = outs[2 * m], outs[2 * m + 1]
+            if a is None or b is None:
+                new.append(a or b)
             else:
-                st.write("TBD")
-    return champion if champion != "TBD" else None
+                matches[(r, m)] = {"a": a, "b": b}
+                new.append(("match", (r, m)))
+        outs = new
+    return matches, outs[0]
 
 
-# ---------------------------------------------------------------- UI
+def make_schedule(matches, key_of, picks, locked, trials=600):
+    """Slot-by-slot scheduler: 2 courts per slot, and nobody (school or team, per `key_of`)
+    may play in two consecutive slots or twice in one slot. For games whose players aren't
+    known yet it assumes EVERY team that could reach it, so the rule holds whoever wins.
+    `picks` (entered winners) narrow those sets; `locked` games (already played) keep their slot."""
+    poss = {}
+
+    def P(o):
+        return {key_of[o[1]]} if o[0] == "team" else poss[o[1]]
+
+    for mid in sorted(matches):
+        poss[mid] = ({key_of[picks[mid]]} if picks.get(mid)
+                     else P(matches[mid]["a"]) | P(matches[mid]["b"]))
+    deps = {mid: [o[1] for o in (m["a"], m["b"]) if o[0] == "match"] for mid, m in matches.items()}
+
+    rng = random.Random(7)
+    best = None
+    for trial in range(trials):
+        w = [0, 0.5, 1.5, 100][trial % 4]
+        pri = {mid: mid[0] * w + rng.random() for mid in matches}
+        slot_of, slots, remaining, prev = {}, [], set(matches), []
+        while remaining:
+            t = len(slots)
+            chosen = [m for m in remaining if locked.get(m) == t]
+            avail = sorted((m for m in remaining if m not in locked and
+                            all(d in slot_of for d in deps[m])), key=pri.get)
+            for m in avail:
+                if len(chosen) >= COURTS:
+                    break
+                if any(poss[m] & poss[x] for x in prev + chosen):
+                    continue
+                chosen.append(m)
+            slots.append(chosen)
+            for m in chosen:
+                slot_of[m] = t
+                remaining.discard(m)
+            prev = chosen
+        # trailing empty slots never happen; score = total slots, then idle slots
+        score = (len(slots), sum(1 for x in slots if not x))
+        if best is None or score < best[0]:
+            best = (score, slots)
+    return best[1]
+
+
+def round_name(r, total):
+    return {1: "Final", 2: "Semifinals", 3: "Quarterfinals"}.get(total - r, f"Round {r + 1}")
+
+
+# ================================================================ UI
+st.set_page_config(page_title="B/C Playoff Bracket", page_icon="🏆", layout="wide")
 st.title("🏆 B/C Team Playoff Bracket")
-st.caption("Single elimination · B bracket and C bracket · top seeds get byes when the field isn't a power of 2")
+st.caption("One combined bracket · B and C teams mix · 2 courts · no school plays back-to-back")
 
 if "table" not in st.session_state:
     st.session_state.table = default_team_table()
 
+
+def clear_results():
+    for k in [k for k in st.session_state if k.startswith("win_")]:
+        del st.session_state[k]
+
+
 with st.sidebar:
     st.header("Setup")
-    st.markdown("**Schools & rosters**")
-    st.dataframe(
-        pd.DataFrame([{"School": s, "Teams": "/".join(t), "Players": p} for s, t, p in SCHOOLS]),
-        hide_index=True, use_container_width=True,
-    )
+    st.dataframe(pd.DataFrame([{"School": s, "Teams": "/".join(t), "Players": p}
+                               for s, t, p in SCHOOLS]),
+                 hide_index=True, use_container_width=True)
     st.caption(f"Total players ≈ {sum(p for _, _, p in SCHOOLS)}")
+
     method = st.radio("Seeding", ["By team size", "Random", "Manual (edit Seed column)"])
-    rnd = st.number_input("Random seed", 0, 9999, 42) if method == "Random" else None
     if st.button("Apply seeding"):
         if method == "By team size":
             st.session_state.table = default_team_table()
         elif method == "Random":
-            rng = random.Random(rnd)
             df = st.session_state.table.copy()
-            for t in BRACKET_TIERS:
-                idx = df.index[df.Tier == t].tolist()
-                seeds = list(range(1, len(idx) + 1))
-                rng.shuffle(seeds)
-                df.loc[idx, "Seed"] = seeds
+            seeds = list(range(1, len(df) + 1))
+            random.shuffle(seeds)
+            df["Seed"] = seeds
             st.session_state.table = df
-        st.session_state.results = {}
+        clear_results()
         st.rerun()
+    avoid = st.checkbox("Keep same-school teams apart", value=True)
+    rest_rule = st.radio("No back-to-back games for…", ["Whole school", "Same team only"])
+
+    st.subheader("Schedule")
+    start = st.time_input("First game", value=datetime.strptime("09:00", "%H:%M").time())
+    minutes = st.number_input("Minutes per game", 15, 120, 45, step=5)
+
     if st.button("Reset all results"):
-        st.session_state.results = {}
-        for k in [k for k in st.session_state if k.startswith(("B_", "C_"))]:
-            del st.session_state[k]
+        clear_results()
         st.rerun()
 
-with st.expander("Teams & seeding (editable)", expanded=False):
-    edited = st.data_editor(
+with st.expander("Teams & seeding (editable)"):
+    st.session_state.table = st.data_editor(
         st.session_state.table, hide_index=True, use_container_width=True,
-        disabled=["Tier", "Team", "School"], key="editor",
-    )
-    st.session_state.table = edited
+        disabled=["Team", "School", "Tier", "Est. players"], key="editor")
 
-tabs = st.tabs(["B Bracket", "C Bracket", "Summary"])
-champs = {}
-for tab, tier in zip(tabs[:2], BRACKET_TIERS):
-    with tab:
-        df = st.session_state.table
-        df = df[df.Tier == tier].sort_values("Seed", kind="stable")
-        teams = df.Team.tolist()
-        st.subheader(f"{tier} Team Bracket — {len(teams)} teams")
-        st.caption("Seeds: " + " · ".join(f"{i}. {t}" for i, t in enumerate(teams, 1)))
-        champs[tier] = build_and_render(tier, teams, tier)
+df = st.session_state.table.sort_values("Seed", kind="stable").reset_index(drop=True)
+teams = df.Team.tolist()
+school_of = dict(zip(df.Team, df.School))
 
-with tabs[2]:
-    c1, c2 = st.columns(2)
-    c1.metric("B Champion", champs.get("B") or "TBD")
-    c2.metric("C Champion", champs.get("C") or "TBD")
-    st.dataframe(st.session_state.table.sort_values(["Tier", "Seed"]),
-                 hide_index=True, use_container_width=True)
-    st.download_button("Download seeding (CSV)",
-                       st.session_state.table.to_csv(index=False), "bc_seeding.csv")
+slots, total = arrange(teams, school_of, avoid)
+matches, final_out = build_matches(slots, total)
+key_of = school_of if rest_rule == "Whole school" else {t: t for t in teams}
+
+# entered winners (read from widget state so the schedule reacts immediately)
+picks = {}
+for mid in sorted(matches):
+    m = matches[mid]
+    res = lambda o: o[1] if o[0] == "team" else picks.get(o[1])
+    a_, b_ = res(m["a"]), res(m["b"])
+    v = st.session_state.get(f"win_{mid}", "TBD")
+    picks[mid] = v if v in (a_, b_) and v != "TBD" else None
+
+# games already played keep their slot
+st.session_state.setdefault("locked", {})
+st.session_state.setdefault("last_sched", {})
+locked = {mid: sl for mid, sl in st.session_state.locked.items() if picks.get(mid)}
+for mid, v in picks.items():
+    if v and mid not in locked and mid in st.session_state.last_sched:
+        locked[mid] = st.session_state.last_sched[mid]
+st.session_state.locked = locked
+
+sched = make_schedule(matches, key_of, picks, locked)
+st.session_state.last_sched = {mid: si for si, ch in enumerate(sched) for mid in ch}
+
+game_no, where = {}, {}
+g = 1
+for si, chosen in enumerate(sched):
+    for ci, mid in enumerate(chosen):
+        game_no[mid] = g
+        where[mid] = (si, ci)
+        g += 1
+
+
+def slot_time(si):
+    t = datetime.combine(datetime.today(), start) + timedelta(minutes=minutes * si)
+    return t.strftime("%I:%M %p").lstrip("0")
+
+
+tab_bracket, tab_sched = st.tabs(["Bracket", "Schedule (2 courts)"])
+
+
+def resolve(o):
+    return o[1] if o[0] == "team" else picks.get(o[1])
+
+
+def label(o):
+    return o[1] if o[0] == "team" else f"Winner of Game {game_no[o[1]]}"
+
+
+with tab_bracket:
+    st.subheader(f"{len(teams)} teams · {sum(1 for s in slots if s is None)} first-round byes")
+    st.caption("Seeds: " + " · ".join(f"{i}. {t}" for i, t in enumerate(teams, 1)))
+    cols = st.columns(total + 1)
+    for r in range(total):
+        with cols[r]:
+            st.markdown(f"**{round_name(r, total)}**")
+            for mid in sorted(m for m in matches if m[0] == r):
+                m = matches[mid]
+                a, b = resolve(m["a"]), resolve(m["b"])
+                opts = ["TBD"] + [x for x in (a, b) if x]
+                k = f"win_{mid}"
+                if st.session_state.get(k, "TBD") not in opts:
+                    st.session_state[k] = "TBD"
+                si, ci = where[mid]
+                with st.container(border=True):
+                    st.caption(f"Game {game_no[mid]} · {slot_time(si)} · Court {ci + 1}")
+                    st.write(f"{a or label(m['a'])}  \nvs  \n{b or label(m['b'])}")
+                    if a and b and school_of[a] == school_of[b]:
+                        st.warning("Same school")
+                    pick = st.selectbox("Winner", opts, key=k, label_visibility="collapsed")
+    with cols[total]:
+        st.markdown("**Champion**")
+        champ = resolve(final_out)
+        with st.container(border=True):
+            st.success(f"🏆 {champ}") if champ else st.write("TBD")
+    if avoid:
+        st.caption("Same-school teams sit in opposite halves, so they can only meet in the final "
+                   "if both get there (unavoidable with one B and one C team per school).")
+
+with tab_sched:
+    st.subheader("Game schedule")
+    rows = []
+    for si, chosen in enumerate(sched):
+        row = {"Slot": si + 1, "Time": slot_time(si)}
+        for ci in range(COURTS):
+            if ci < len(chosen):
+                mid = chosen[ci]
+                m = matches[mid]
+                a = resolve(m["a"]) or label(m["a"])
+                b = resolve(m["b"]) or label(m["b"])
+                row[f"Court {ci + 1}"] = f"G{game_no[mid]} ({round_name(mid[0], total)}): {a} vs {b}"
+            else:
+                row[f"Court {ci + 1}"] = "—"
+        rows.append(row)
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    byes = [slots[i] or slots[i + 1] for i in range(0, len(slots), 2)
+            if (slots[i] is None) != (slots[i + 1] is None)]
+    if byes:
+        st.caption("First-round byes: " + ", ".join(byes))
+    st.info("Rule check: the schedule leaves a gap slot whenever a school could appear in the "
+            "previous slot (counting every team that could possibly reach that game), so the rest "
+            "rule holds whoever wins. The projected schedule starts out cautious and tightens up "
+            "as you enter winners; games with a winner entered keep their slot.")
+    st.download_button("Download schedule (CSV)", pd.DataFrame(rows).to_csv(index=False),
+                       "bc_schedule.csv")
